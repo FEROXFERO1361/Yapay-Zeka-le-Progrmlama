@@ -1,0 +1,92 @@
+import os
+from google import genai
+
+# ==========================================
+# YAPAY ZEKA DESTEKLI DOGAL DILDEN SQL URETICI
+# ==========================================
+
+# 1. VERITABANI SEMASI
+sema = """
+1. Musteriler Tablosu: musteri_id, ad_soyad, eposta, sehir
+2. Siparisler Tablosu: siparis_id, musteri_id, tutar, siparis_tarihi
+"""
+
+# 2. KULLANICI TALEBI
+talep = """
+Son 30 gunde 5000 TL uzeri alisveris yapan Istanbul'daki
+musterilerin adini, e-posta adresini ve toplam harcama tutarini getir.
+"""
+
+# 3. GEMINI ILE SQL URETIMI
+def sql_uret(sema, talep):
+
+    api_key = os.getenv("GEMINI_API_KEY")
+
+    if not api_key:
+        raise ValueError(
+            "GEMINI_API_KEY bulunamadi! API anahtarinizi tanimlayin."
+        )
+
+    client = genai.Client(api_key=api_key)
+
+    prompt = f"""
+Sen uzman bir SQL gelistiricisisin.
+
+Asagidaki veritabani semasina ve kullanici talebine gore
+uygun SQL sorgusunu uret.
+
+KURALLAR:
+- Sadece SQL sorgusu yaz.
+- Yalnizca SELECT sorgusu uret.
+- INSERT, UPDATE, DELETE, DROP veya ALTER kullanma.
+- Semada bulunmayan tablo ve sutunlari uydurma.
+- PostgreSQL SQL sozdizimini kullan.
+- Aciklama veya Markdown kod blogu ekleme.
+
+VERITABANI SEMASI:
+{sema}
+
+KULLANICI TALEBI:
+{talep}
+"""
+
+    print("\nGemini istegi gonderiliyor...")
+
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt
+    )
+
+    return response.text.strip()
+
+
+# 4. PROGRAMI CALISTIR
+def main():
+
+    print("=" * 60)
+    print("YAPAY ZEKA DESTEKLI DOGAL DILDEN SQL URETICI")
+    print("=" * 60)
+
+    print("\n[ASAMA 1] Veritabani semasi ve kullanici talebi alindi...")
+
+    print("\n[ASAMA 2] SQL cevirisi icin Gemini'ye baglaniliyor...")
+
+    try:
+        sql_sorgusu = sql_uret(sema, talep)
+
+        print("\nGemini yaniti alindi!")
+
+        print("=" * 60)
+        print("URETILEN SQL SORGUSU")
+        print("=" * 60)
+
+        print(sql_sorgusu)
+
+        print("=" * 60)
+
+    except Exception as hata:
+        print("\nHATA:", hata)
+
+
+if __name__ == "__main__":
+    main()
