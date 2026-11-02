@@ -1,0 +1,121 @@
+import sqlite3
+import os
+import re
+import time
+import random
+import pandas as pd
+from google import genai
+from google.genai import types
+
+conn = sqlite3.connect(':memory:')
+cursor = conn.cursor()
+
+cursor.execute("CREATE TABLE musteriler (musteri_id INT, ad_soyad TEXT, sehir TEXT)")
+cursor.execute("CREATE TABLE siparisler (siparis_id INT, musteri_id INT, tutar REAL, tarih TEXT)")
+
+sehirler = ['İstanbul', 'Ankara', 'İzmir', 'Bursa', 'Antalya']
+isimler = ['Ahmet', 'Mehmet', 'Ayşe', 'Fatma', 'Ali', 'Veli', 'Zeynep', 'Elif', 'Can', 'Deniz']
+soyisimler = ['Yılmaz', 'Kaya', 'Demir', 'Şahin', 'Çelik', 'Yıldız', 'Yıldırım', 'Öztürk', 'Aydın', 'Özdemir']
+
+musteriler_data = [
+    (i, f"{random.choice(isimler)} {random.choice(soyisimler)}", random.choice(sehirler))
+    for i in range(1, 1001)
+]
+
+siparisler_data = [
+    (i, random.randint(1, 1000), round(random.uniform(100.0, 10000.0), 2), '2026-01-01')
+    for i in range(1, 1001)
+]
+
+cursor.executemany("INSERT INTO musteriler VALUES (?, ?, ?)", musteriler_data)
+cursor.executemany("INSERT INTO siparisler VALUES (?, ?, ?, ?)", siparisler_data)
+conn.commit()
+
+print("[BİLGİ] Veritabanı oluşturuldu. 1.000 müşteri ve 1.000 sipariş yüklendi.")
+
+client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
+
+SYSTEM_INSTRUCTION = (
+    "Aşağıdaki veritabanı şemasına göre kullanıcının doğal dille istediği veriyi çekecek SQLite uyumlu SQL sorgusunu yaz.\n"
+    "Şema: Musteriler(musteri_id, ad_soyad, sehir), Siparisler(siparis_id, musteri_id, tutar, tarih).\n"
+    "Kurallar: Sadece SELECT komutu kullan. Çıktıda markdown etiketi ve açıklama olmasın."
+)
+
+def guvenlik_kontrolu(sql_kodu: str) -> bool:
+    yasakli_pattern = r'\b(DROP|DELETE|UPDATE|INSERT|ALTER|TRUNCATE|CREATE)\b'
+    if re.search(yasakli_pattern, sql_kodu, re.IGNORECASE):
+        print("[GÜVENLİK ENGELİ] Zararlı SQL tespit edildi: Yalnızca SELECT komutlarına izin verilmektedir!")
+        return False
+    return True
+
+def clean_sql(raw_sql: str) -> str:
+    cleaned = re.sub(r'```sql\s*', '', raw_sql, flags=re.IGNORECASE)
+    cleaned = re.sub(r'```\s*', '', cleaned)
+    return cleaned.strip()
+
+def sql_asistani_calistir(kullanici_talebi: str):
+    deneme = 0
+    max_deneme = 3
+    mevcut_talep = kullanici_talebi
+
+    while deneme < max_deneme:
+        deneme += 1
+        print(f"[GEMINI] SQL Üretiliyor... (Deneme {deneme}/{max_deneme})")
+        
+        try:
+            response = client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=mevcut_talep,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_INSTRUCTION,
+                    temperature=0.1
+                )
+            )
+            
+            raw_sql = response.text
+            sql_kodu = clean_sql(raw_sql)
+            print(f"[SQL] {sql_kodu}")
+
+            if not guvenlik_kontrolu(sql_kodu):
+                return
+
+            print("[GÜVENLİK] Denetim Başarılı (Sadece SELECT).")
+
+            baslangic = time.perf_counter()
+            cursor.execute(sql_kodu)
+            sonuclar = cursor.fetchall()
+            sutunlar = [desc[0] for desc in cursor.description] if cursor.description else []
+            bitis = time.perf_counter()
+
+            icra_suresi = bitis - baslangic
+            print(f"[SONUÇ] (İcra Süresi: {icra_suresi:.4f} sn)")
+
+            if sonuclar:
+                df = pd.DataFrame(sonuclar, columns=sutunlar)
+                print(df.to_string(index=False))
+            else:
+                print("Sorgu başarıyla çalıştırıldı ancak dönen kayıt bulunamadı.")
+            
+            return
+
+        except sqlite3.Error as e:
+            hata_mesaji = str(e)
+            print(f"[HATA] SQLite Hatası Alındı: {hata_mesaji}")
+            if deneme < max_deneme:
+                print("[SELF-CORRECTION] Hata Gemini'ye geri besleniyor ve sorgu yeniden üretiliyor...")
+                mevcut_talep = (
+                    f"İlk talep: {kullanici_talebi}\n"
+                    f"Ürettiğin şu SQL sorgusu hata verdi: {sql_kodu}\n"
+                    f"Hata mesajı: {hata_mesaji}\n"
+                    f"Lütfen hatayı düzelterek geçerli bir SQLite SELECT sorgusu yaz."
+                )
+            else:
+                print("[BAŞARISIZ] Maksimum deneme sayısına ulaşıldı. Sorgu çalıştırılamadı.")
+
+if __name__ == '__main__':
+    while True:
+        kullanici_girisi = input("\nSoru Girin (Çıkış için 'q'): ")
+        if kullanici_girisi.lower() == 'q':
+            break
+        if kullanici_girisi.strip():
+            sql_asistani_calistir(kullanici_girisi)
